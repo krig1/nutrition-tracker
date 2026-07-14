@@ -15,30 +15,49 @@ API_KEY = os.environ.get("FDC_API_KEY")
 BASE_URL = "https://api.nal.usda.gov/fdc/v1"
 DB_PATH = "foods.db"
 
-# Data types to prefer: Foundation and SR Legacy are the cleanest,
-# most reliable sources for common whole foods (vs. Branded, which
-# is huge and inconsistent). We search across these two first.
-PREFERRED_DATA_TYPES = ["Foundation", "SR Legacy"]
+# Data types to prefer: Foundation and SR Legacy are both clean,
+# reliable sources for common whole foods (vs. Branded, which is huge
+# and inconsistent). We query them as SEPARATE calls (so one dataset's
+# relevance scoring doesn't drown out the other, e.g. "milk" matching a
+# Foundation cracker before an SR Legacy whole milk entry) but MERGE
+# their results into one combined candidate pool. This matters because
+# Foundation and SR Legacy don't have full overlap: Foundation is a
+# narrower dataset and may not contain a food's "default" everyday form
+# at all (e.g. it has sweetened condensed/evaporated/dry milk but not
+# plain whole milk, which only lives in SR Legacy). Stopping as soon as
+# Foundation returns anything would silently hide the SR Legacy match
+# the matcher actually needs to see. Branded is only queried as a last
+# resort, if the combined Foundation + SR Legacy pool is empty.
+RELIABLE_DATA_TYPES = ["Foundation", "SR Legacy"]
 
 
 def _get_connection():
     return sqlite3.connect(DB_PATH)
 
 
-def search_food(query, page_size=5):
+def search_food(query, page_size=10):
     """
     Search FDC for foods matching a query string.
-    Tries Foundation/SR Legacy first (cleaner data for whole foods).
-    Falls back to Branded (packaged/branded products) if nothing is found,
-    so common items like sodas or packaged snacks still return results.
+    Queries Foundation and SR Legacy separately, then merges both result
+    sets into one candidate pool (so the matcher sees the full range of
+    plain/default food forms, not whichever dataset happened to answer
+    first). Falls back to Branded only if that combined pool is empty,
+    so packaged/branded-only items (sodas, packaged snacks) still work.
     Returns a list of dicts: [{fdc_id, description, data_type}, ...]
     """
     if not API_KEY:
         raise RuntimeError("FDC_API_KEY environment variable not set")
 
-    results = _search_by_data_types(query, PREFERRED_DATA_TYPES, page_size)
-    if results:
-        return results
+    combined = []
+    seen_ids = set()
+    for data_type in RELIABLE_DATA_TYPES:
+        for item in _search_by_data_types(query, [data_type], page_size):
+            if item["fdc_id"] not in seen_ids:
+                combined.append(item)
+                seen_ids.add(item["fdc_id"])
+
+    if combined:
+        return combined
 
     return _search_by_data_types(query, ["Branded"], page_size)
 

@@ -14,7 +14,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-PARSER_MODEL = "gpt-5-nano"
+PARSER_MODEL = "gpt-5.4-nano"
 
 _client = None
 

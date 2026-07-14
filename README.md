@@ -16,7 +16,7 @@ free-text log
       |                    [{food_name, quantity, unit}, ...]
       v
   fdc_client.py  ------->  searches USDA FoodData Central for candidates
-      |                    (Foundation/SR Legacy first, Branded as fallback)
+      |                    (Foundation + SR Legacy merged, Branded as fallback)
       v
   matcher.py  ---------->  LLM picks the best-matching candidate,
       |                    given the original log context
@@ -73,24 +73,41 @@ free-text log
 
 ## Design decisions & tradeoffs
 
+**Why different models for different pipeline steps?**
+Parsing (free text -> structured JSON) and recommendation generation
+(templated food suggestions) are both low-reasoning, high-volume tasks, so
+they run on a cheaper nano-tier model. Matching (picking the best FDC
+candidate) requires actual judgement, raw-vs-cooked, default vs. specialized
+variants, so it runs on a stronger mini-tier model. Concentrating cost on the
+one step where accuracy actually matters is cheaper overall than running
+everything on the same model.
+
 **Why USDA FoodData Central over other nutrition APIs?**
 Free, no rate-limit cost, and includes detailed micronutrient data (not just
 macros), which most free alternatives don't provide.
 
-**Why Foundation/SR Legacy first, Branded as fallback?**
-Foundation and SR Legacy are the cleanest, most standardized entries for
-whole/common foods. Branded includes packaged/commercial products (needed
-for things like specific sodas or fast food items) but is much larger and
-noisier, so it's only searched when the cleaner catalogs return nothing useful.
+**Why merge Foundation + SR Legacy instead of returning the first non-empty
+tier?**
+Foundation and SR Legacy don't fully overlap: Foundation is a narrower
+dataset and sometimes doesn't contain a food's plain, everyday form at all
+(e.g. it has sweetened condensed/evaporated/dry milk but not plain whole
+milk, which only lives in SR Legacy). Stopping as soon as one tier returns
+*anything* can silently hide the better match the matcher actually needs to
+see. Both are queried separately (so one dataset's relevance ranking doesn't
+drown out the other) and merged into a single candidate pool. Branded is
+still only queried as a last resort if that combined pool is empty.
 
 **Why LLM-based matching instead of pure fuzzy string matching?**
 Plain text search on food names often returns technically-valid but
 unintuitive matches (e.g. "chicken breast" ranking deli lunchmeat above
-plain roasted chicken). An LLM given the original log context can apply
-everyday judgement a keyword match can't. Tradeoff: this makes matching
-non-deterministic, the same log can occasionally match a different (still
-reasonable) candidate on different runs. This is a known, accepted limitation
-for v1.
+plain roasted chicken, or "milk" ranking crackers/candy above the actual
+dairy product). An LLM given the original log context can apply everyday
+judgement a keyword match can't, including defaulting to the standard,
+general-population version of a food (e.g. dairy milk over rice/almond
+milk, adult portions over toddler/infant variants) unless the log specifies
+otherwise. Tradeoff: this makes matching non-deterministic, the same log can
+occasionally match a different (still reasonable) candidate on different
+runs. This is a known, accepted limitation for v1.
 
 **Why rule-based scoring instead of a trained classifier?**
 A simple % of RDA threshold is transparent, requires no training data, and
@@ -114,13 +131,22 @@ that adds value without that data.
 **RDA coverage:**
 Only two profiles are currently supported: adult male and adult female,
 ages 19-50. Pregnancy, lactation, children, and older adults have different
-RDAs and are not yet covered.
+RDAs and are not yet covered. Full source citations for the RDA table are
+shown in the app itself, in an expandable "Sources" section at the bottom
+of the page.
 
 **Daily totals vs. single-meal logs:**
 The scorer compares whatever's logged against a *full day's* RDA. Logging a
 single meal will therefore show as "deficient" across most nutrients, that's
 expected, not a bug. Meaningful deficiency flags require logging a full
 day's intake.
+
+## UI
+
+The web app uses a dark, glow-accented interface (built with the site's
+inline HTML/CSS/JS, no separate frontend framework). A "Sources" section at
+the bottom of the page links to USDA FoodData Central and the RDA reference
+documents used, so users can see exactly where the numbers come from.
 
 ## Known bugs fixed during development (for future reference)
 
@@ -132,21 +158,38 @@ day's intake.
 - The LLM matcher can occasionally hallucinate an `fdc_id` that isn't
   actually one of the candidates it was given. `matcher.py` validates the
   returned id against the real candidate list before trusting it.
+- Early on, `search_food()` returned as soon as the first data-type tier
+  (Foundation) produced any result, which could hide a better match living
+  in a later tier (e.g. "milk" matching Foundation's condensed/evaporated
+  variants while plain whole milk sat unseen in SR Legacy). Foundation and
+  SR Legacy are now queried separately and merged into one candidate pool
+  instead of short-circuiting on the first non-empty tier.
+- The matcher's prompt originally had no rule against specialized-population
+  variants, so generic terms like "potato" or "milk" could match toddler/baby
+  food entries. Added an explicit instruction to default to standard
+  adult/general-population forms unless the log specifies otherwise.
 
 ## Tech stack
 
 - **Language**: Python
 - **Web framework**: Flask
-- **LLM**: OpenAI GPT-5 Nano (parsing, matching, recommendations); Ollama
-  (local Gemma models) supported as an alternative for the general chat
-  interface groundwork this project was built on
+- **LLM**: OpenAI, tiered by task —
+  - `parser.py` and `recommender.py`: GPT-5.4 Nano (low-reasoning,
+    high-volume extraction/generation)
+  - `matcher.py`: GPT-5.4 Mini (needs real judgement; a bad match
+    propagates through the whole pipeline, so it gets a stronger model)
+  - Ollama (local Gemma models) supported as an alternative for the general
+    chat interface groundwork this project was built on
 - **Nutrient data**: USDA FoodData Central API
 - **Storage**: SQLite (local nutrient cache)
 
 ## Roadmap / not yet built
 
 - Multi-day logging and trend tracking
-- Expanded RDA coverage (age ranges, pregnancy/lactation)
+- Expanded RDA coverage (weight, pregnancy/lactation, etc)
 - Better raw/cooked disambiguation in matching
 - Real serving-size data instead of the flat 100g assumption
 - ML-based scoring once real usage data exists
+- Confidence-aware search fallthrough (only escalate to the next data-type
+  tier if the matcher rejects all current candidates, not just when a tier
+  returns zero results)

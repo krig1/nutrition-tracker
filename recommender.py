@@ -11,7 +11,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-RECOMMENDER_MODEL = "gpt-5-nano"
+RECOMMENDER_MODEL = "gpt-5.4-nano"
 TOP_N_DEFICIENCIES = 5
 
 _client = None

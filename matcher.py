@@ -16,7 +16,7 @@ from openai import OpenAI
 
 load_dotenv()
 
-MATCHER_MODEL = "gpt-5-nano"
+MATCHER_MODEL = "gpt-5.4-mini"
 
 _client = None
 
@@ -58,6 +58,22 @@ that happen to contain that food as an ingredient (e.g. "potato pancakes",
 "potato salad", "scalloped potatoes"), UNLESS the log specifically names
 that dish. The same applies to deli meats, breaded/fried variants, or other
 unusual preparations, only pick those if the log implies them.
+
+When a food is logged with no modifier (e.g. "milk", "bread", "cheese",
+"rice"), default to the most common, standard version of that food as
+typically consumed by the general population, not a specialized,
+alternative, or niche variant. For example, unmodified "milk" should
+default to dairy cow's milk (whole or 2%), not rice milk, almond milk,
+oat milk, goat milk, or any other plant-based or specialty substitute.
+Only pick a non-default variant if the log names it directly (e.g. "oat
+milk", "almond milk", "skim milk").
+
+Default to the standard adult/general-population version of a food. Do NOT
+pick infant, toddler, baby food, medical/enteral, or other specialized-
+population variants (e.g. "Babyfood, potatoes, toddler", "Formula, infant")
+unless the log explicitly mentions a baby, toddler, or medical context.
+Likewise avoid novelty, fortified, or diet-specific variants (e.g. "potato,
+puffs, imitation", "potato, dehydrated, flakes") unless implied by the log.
 
 Respond with ONLY a JSON object in this exact format, no other text:
 {{"fdc_id": <number or null>, "reason": "<one short sentence>"}}
