@@ -35,7 +35,7 @@ def _get_connection():
     return sqlite3.connect(DB_PATH)
 
 
-def search_food(query, page_size=10):
+def search_food(query, page_size=15):
     """
     Search FDC for foods matching a query string.
     Queries Foundation and SR Legacy separately, then merges both result
@@ -91,6 +91,10 @@ def get_nutrients(fdc_id):
     Returns a list of dicts: [{nutrient_name, unit, amount_per_100g}, ...]
     """
     cached = _get_cached_nutrients(fdc_id)
+    print(f"[DEBUG] cache lookup for fdc_id={fdc_id}: "
+          f"{'HIT, ' + str(len(cached)) + ' nutrients' if cached else 'MISS'}")
+    if cached:
+        print(f"[DEBUG] cached sample: {cached[:3]}")
     if cached:
         return cached
 
@@ -101,8 +105,11 @@ def get_nutrients(fdc_id):
     response = requests.get(f"{BASE_URL}/food/{fdc_id}", params=params)
 
     if response.status_code == 404:
-        # Invalid or no-longer-available fdc_id; treat as no data rather
-        # than crashing the whole pipeline.
+        # Invalid, deprecated, or no-longer-available fdc_id. USDA's
+        # search index can occasionally lag behind their detail database,
+        # so an id can appear as a valid search result but 404 here.
+        # Treat as no data rather than crashing the pipeline; pipeline.py
+        # handles retrying with a different candidate when this happens.
         return []
 
     response.raise_for_status()

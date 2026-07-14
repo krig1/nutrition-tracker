@@ -64,6 +64,39 @@ def process_log(log_text):
         matched_candidate = next((c for c in candidates if c["fdc_id"] == fdc_id), None)
         nutrients = get_nutrients(fdc_id)
 
+        if not nutrients:
+            # The chosen fdc_id passed validation as a real search result,
+            # but USDA's detail endpoint has no data for it (their search
+            # index can lag behind their detail database, so an id can
+            # show up as a valid candidate but 404 on lookup). Don't
+            # silently report this as a successful "matched" item with
+            # zero nutrients, that's misleading. Instead, retry against
+            # the remaining candidates, excluding the dead one, so a
+            # working match can still be found.
+            remaining = [c for c in candidates if c["fdc_id"] != fdc_id]
+            retry_fdc_id = match_food_llm(food_name, remaining) if remaining else None
+
+            if retry_fdc_id is not None:
+                retry_nutrients = get_nutrients(retry_fdc_id)
+                if retry_nutrients:
+                    fdc_id = retry_fdc_id
+                    nutrients = retry_nutrients
+                    matched_candidate = next(
+                        (c for c in remaining if c["fdc_id"] == fdc_id), None
+                    )
+
+        if not nutrients:
+            # Still nothing usable after retrying, report clearly instead
+            # of showing a fake zero-nutrient match.
+            item_details.append({
+                "food_name": food_name,
+                "quantity": parsed["quantity"],
+                "unit": parsed["unit"],
+                "status": "no_nutrient_data",
+                "matched_description": matched_candidate["description"] if matched_candidate else None,
+            })
+            continue
+
         matched_items.append({
             "quantity": parsed["quantity"],
             "unit": parsed["unit"],

@@ -141,6 +141,27 @@ single meal will therefore show as "deficient" across most nutrients, that's
 expected, not a bug. Meaningful deficiency flags require logging a full
 day's intake.
 
+**FDC search results that 404 on lookup (known USDA data limitation):**
+Some foods returned by FDC's search endpoint don't resolve when fetching
+their full nutrient profile from the detail endpoint (`/food/{fdcId}`
+returns a 404 for an `fdc_id` the search endpoint just returned as a valid
+result). This has been observed specifically on some liquid milk entries
+(e.g. plain "Milk, whole, 3.25% milkfat"), which appear to trace back to
+FDC's 2019 migration that merged the older USDA National Nutrient Database
+into the current FoodData Central system, records from that transition seem
+more likely to have this search-index/detail-database mismatch. It's
+possible the record is browsable on USDA's own website through a different
+lookup path than the public API exposes.
+
+When this happens, the pipeline retries matching against the remaining
+search candidates rather than silently showing a zero-nutrient result. This
+means the app may occasionally match to a less common variant of a food
+(e.g. "Milk, dry, whole" instead of liquid whole milk) if the more common
+version's record is affected. If no usable candidate is found at all, the
+item is reported with a `no_nutrient_data` status rather than a fake match.
+Not something fixable on my end, this is a data availability gap in FDC
+itself.
+
 ## UI
 
 The web app uses a dark, glow-accented interface (built with the site's
@@ -168,6 +189,13 @@ documents used, so users can see exactly where the numbers come from.
   variants, so generic terms like "potato" or "milk" could match toddler/baby
   food entries. Added an explicit instruction to default to standard
   adult/general-population forms unless the log specifies otherwise.
+- `pipeline.py` originally treated any successfully-matched `fdc_id` as a
+  complete success, even if its nutrient fetch came back empty (e.g. due to
+  the FDC search/detail mismatch described above). This silently produced
+  a "matched" item showing zero for every nutrient with no indication
+  anything had gone wrong. The pipeline now retries against the remaining
+  candidates if the chosen match has no nutrient data, and reports a
+  `no_nutrient_data` status if nothing usable is found.
 
 ## Tech stack
 
@@ -186,7 +214,7 @@ documents used, so users can see exactly where the numbers come from.
 ## Roadmap / not yet built
 
 - Multi-day logging and trend tracking
-- Expanded RDA coverage (weight, pregnancy/lactation, etc)
+- Expanded RDA coverage (age ranges, pregnancy/lactation)
 - Better raw/cooked disambiguation in matching
 - Real serving-size data instead of the flat 100g assumption
 - ML-based scoring once real usage data exists
