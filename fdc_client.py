@@ -91,10 +91,7 @@ def get_nutrients(fdc_id):
     Returns a list of dicts: [{nutrient_name, unit, amount_per_100g}, ...]
     """
     cached = _get_cached_nutrients(fdc_id)
-    print(f"[DEBUG] cache lookup for fdc_id={fdc_id}: "
-          f"{'HIT, ' + str(len(cached)) + ' nutrients' if cached else 'MISS'}")
-    if cached:
-        print(f"[DEBUG] cached sample: {cached[:3]}")
+    
     if cached:
         return cached
 

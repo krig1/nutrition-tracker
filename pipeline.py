@@ -11,21 +11,37 @@ from matcher import match_food_llm
 from aggregator import compute_daily_totals
 
 
-def process_log(log_text):
+def process_log(log_text, on_progress=None):
     """
     Takes a free-text food log and returns a dict:
         {
             "items": [ ... per-item detail, including unmatched ... ],
             "totals": { nutrient_name: {"amount": ..., "unit": ...} }
         }
+
+    on_progress: optional callable(str) invoked with a short human-readable
+    status message as the pipeline moves through real stages. Used to power
+    a live progress indicator in the UI; safe to omit for non-UI callers.
     """
+    def report(msg):
+        if on_progress:
+            on_progress(msg)
+
+    report("Parsing your log...")
     parsed_items = parse_log(log_text)
 
     matched_items = []
     item_details = []
+    total_items = len(parsed_items)
 
-    for parsed in parsed_items:
+    for i, parsed in enumerate(parsed_items, start=1):
         food_name = parsed["food_name"]
+
+        if total_items > 1:
+            report(f"Matching item {i} of {total_items}: {food_name}...")
+        else:
+            report(f"Matching '{food_name}' to USDA data...")
+
         candidates = search_food(food_name)
 
         if not candidates:
@@ -61,6 +77,7 @@ def process_log(log_text):
             })
             continue
 
+        report(f"Fetching nutrient data for {food_name}...")
         matched_candidate = next((c for c in candidates if c["fdc_id"] == fdc_id), None)
         nutrients = get_nutrients(fdc_id)
 
@@ -112,6 +129,7 @@ def process_log(log_text):
             "fdc_id": fdc_id,
         })
 
+    report("Crunching nutrient totals...")
     totals = compute_daily_totals(matched_items)
 
     return {

@@ -1,6 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import threading
+import uuid
+
 from flask import Flask, request, jsonify, render_template_string
 
 from pipeline import process_log
@@ -8,6 +11,11 @@ from scorer import score_nutrients, get_flagged_deficiencies
 from recommender import get_top_deficiencies, generate_tips
 
 app = Flask(__name__)
+
+# In-memory job store for progress polling. Fine for a single-process local
+# dev app; would need a real store (Redis, DB) behind multiple workers/gunicorn.
+_jobs = {}
+_jobs_lock = threading.Lock()
 
 PAGE = """
 <!DOCTYPE html>
@@ -198,6 +206,8 @@ PAGE = """
     font-family: "Space Grotesk", "Inter", sans-serif;
     padding: 10px 20px;
     margin-top: 14px;
+    min-width: 210px;
+    text-align: center;
     cursor: pointer;
     background: linear-gradient(120deg, var(--accent), var(--accent3));
     color: #1a1015;
@@ -215,7 +225,18 @@ PAGE = """
     transform: translateY(-1px);
   }
   button:active:not(:disabled) { transform: scale(0.98); }
-  button:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+
+  button:disabled {
+    opacity: 0.75;
+    cursor: default;
+    box-shadow: none;
+    animation: pulseText 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulseText {
+    0%, 100% { opacity: 0.75; }
+    50% { opacity: 0.5; }
+  }
 
   table {
     width: 100%;
@@ -260,7 +281,7 @@ PAGE = """
   .status-near_limit { color: var(--borderline); font-weight: 600; }
   .status-ok { color: var(--adequate); font-weight: 600; }
   .status-matched { color: var(--text-secondary); }
-  .status-no_confident_match, .status-no_candidates { color: var(--deficient); }
+  .status-no_confident_match, .status-no_candidates, .status-no_nutrient_data { color: var(--deficient); }
 
   section {
     margin-top: 28px;
@@ -510,24 +531,31 @@ PAGE = """
         const resultsDiv = document.getElementById("results");
 
         btn.disabled = true;
-        btn.textContent = "Analyzing...";
+        btn.textContent = "Starting...";
         resultsDiv.classList.add("hidden");
         resultsDiv.classList.remove("show");
 
         try {
-            const res = await fetch("/process", {
+            const startRes = await fetch("/process/start", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ log_text: logText, sex: sex, age: age })
             });
 
-            if (!res.ok) {
-                const err = await res.json();
+            if (!startRes.ok) {
+                const err = await startRes.json();
                 alert("Error: " + (err.error || "something went wrong"));
                 return;
             }
 
-            const data = await res.json();
+            const { job_id } = await startRes.json();
+
+            const data = await pollJob(job_id, btn);
+            if (data.error) {
+                alert("Error: " + data.error);
+                return;
+            }
+
             renderResults(data);
             resultsDiv.classList.remove("hidden");
             requestAnimationFrame(() => resultsDiv.classList.add("show"));
@@ -537,6 +565,35 @@ PAGE = """
             btn.disabled = false;
             btn.textContent = "Analyze";
         }
+    }
+
+    function pollJob(jobId, btn) {
+        return new Promise((resolve, reject) => {
+            const poll = async () => {
+                try {
+                    const res = await fetch(`/process/status/${jobId}`);
+                    if (!res.ok) {
+                        reject(new Error("Lost track of the job status"));
+                        return;
+                    }
+                    const status = await res.json();
+
+                    if (status.stage) {
+                        btn.textContent = status.stage;
+                    }
+
+                    if (status.done) {
+                        resolve(status.error ? { error: status.error } : status.result);
+                        return;
+                    }
+
+                    setTimeout(poll, 400);
+                } catch (e) {
+                    reject(e);
+                }
+            };
+            poll();
+        });
     }
 
     function renderResults(data) {
@@ -572,3 +629,96 @@ PAGE = """
 </body>
 </html>
 """
+
+@app.route("/", methods=["GET"])
+def index():
+    return render_template_string(PAGE)
+
+
+def _run_job(job_id, log_text, sex, age):
+    def on_progress(stage_msg):
+        with _jobs_lock:
+            _jobs[job_id]["stage"] = stage_msg
+
+    try:
+        result = process_log(log_text, on_progress=on_progress)
+        totals = result["totals"]
+
+        with _jobs_lock:
+            _jobs[job_id]["stage"] = "Scoring against your RDA..."
+
+        scored = score_nutrients(totals, sex=sex, age=age)
+        flagged = get_flagged_deficiencies(scored)
+        top_deficiencies = get_top_deficiencies(flagged)
+
+        logged_foods_summary = ", ".join(
+            item["food_name"] for item in result["items"] if item["status"] == "matched"
+        )
+
+        if logged_foods_summary:
+            with _jobs_lock:
+                _jobs[job_id]["stage"] = "Generating recommendations..."
+            tips = generate_tips(logged_foods_summary, top_deficiencies)
+        else:
+            tips = "No foods were matched, so no recommendations could be generated."
+
+        scored_list = [
+            {"name": name, **info} for name, info in scored.items()
+        ]
+
+        with _jobs_lock:
+            _jobs[job_id]["done"] = True
+            _jobs[job_id]["result"] = {
+                "items": result["items"],
+                "scored_nutrients": scored_list,
+                "tips": tips,
+            }
+
+    except Exception as e:
+        with _jobs_lock:
+            _jobs[job_id]["done"] = True
+            _jobs[job_id]["error"] = str(e)
+
+
+@app.route("/process/start", methods=["POST"])
+def process_start():
+    data = request.json
+    log_text = data.get("log_text", "").strip()
+    sex = data.get("sex", "female")
+    age = data.get("age", 28)
+
+    if not log_text:
+        return jsonify({"error": "No log text provided"}), 400
+
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _jobs[job_id] = {"stage": "Starting...", "done": False, "result": None, "error": None}
+
+    thread = threading.Thread(target=_run_job, args=(job_id, log_text, sex, age), daemon=True)
+    thread.start()
+
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/process/status/<job_id>", methods=["GET"])
+def process_status(job_id):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify({"error": "Unknown job_id"}), 404
+
+        response = {
+            "stage": job["stage"],
+            "done": job["done"],
+        }
+        if job["done"]:
+            response["result"] = job["result"]
+            response["error"] = job["error"]
+            # Job consumed, clean up so the store doesn't grow unbounded.
+            del _jobs[job_id]
+
+        return jsonify(response)
+
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5001)

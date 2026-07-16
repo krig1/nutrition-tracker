@@ -159,7 +159,7 @@ means the app may occasionally match to a less common variant of a food
 (e.g. "Milk, dry, whole" instead of liquid whole milk) if the more common
 version's record is affected. If no usable candidate is found at all, the
 item is reported with a `no_nutrient_data` status rather than a fake match.
-Not something fixable on my end, this is a data availability gap in FDC
+Not something fixable on our end, this is a data availability gap in FDC
 itself.
 
 ## UI
@@ -168,6 +168,23 @@ The web app uses a dark, glow-accented interface (built with the site's
 inline HTML/CSS/JS, no separate frontend framework). A "Sources" section at
 the bottom of the page links to USDA FoodData Central and the RDA reference
 documents used, so users can see exactly where the numbers come from.
+
+**Progress reporting:** since a single log can involve several sequential
+LLM calls (parse, then match + fetch nutrients per food item, then score,
+then generate tips), `/process` is split into two routes instead of one
+synchronous call: `POST /process/start` kicks off the pipeline in a
+background thread and immediately returns a `job_id`, and
+`GET /process/status/<job_id>` is polled every 400ms for the current stage.
+`pipeline.py`'s `process_log()` accepts an `on_progress` callback that
+reports real checkpoints (e.g. "Matching item 2 of 4"), so the Analyze
+button reflects actual pipeline progress rather than a fixed animation.
+
+The job store is a plain in-memory dict guarded by a lock, that's fine for
+local, single-process use, but won't survive a server restart mid-request
+and isn't safe if this is ever run with multiple worker processes (e.g.
+`gunicorn --workers > 1`), since each worker would have its own separate
+job store. A real deployment would need to swap this for Redis or a
+database-backed job table.
 
 ## Known bugs fixed during development (for future reference)
 
