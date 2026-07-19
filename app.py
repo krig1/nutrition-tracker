@@ -435,7 +435,7 @@ PAGE = """
     </div>
   </div>
 
-  <textarea id="logText" rows="3" placeholder="Example: I had a chicken sandwich and a coke"></textarea><br>
+  <textarea id="logText" rows="3" placeholder="Example: I had a chicken sandwich and a coke" onkeydown="handleLogKeydown(event)"></textarea><br>
   <button id="submitBtn" onclick="submitLog()">Analyze</button>
 
   <div id="results" class="hidden">
@@ -521,13 +521,22 @@ PAGE = """
   </footer>
 
   <script>
+    function handleLogKeydown(event) {
+        if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            submitLog();
+        }
+    }
+
     async function submitLog() {
         const logText = document.getElementById("logText").value.trim();
         if (!logText) return;
 
+        const btn = document.getElementById("submitBtn");
+        if (btn.disabled) return;
+
         const sex = document.getElementById("sex").value;
         const age = parseInt(document.getElementById("age").value, 10);
-        const btn = document.getElementById("submitBtn");
         const resultsDiv = document.getElementById("results");
 
         btn.disabled = true;
